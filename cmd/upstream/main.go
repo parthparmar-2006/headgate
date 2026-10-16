@@ -8,6 +8,8 @@ import (
 	"strconv"
 	"sync"
 	"time"
+
+	"github.com/parthparmar-2006/headgate/internal/rolling"
 )
 
 type tally struct {
@@ -52,13 +54,46 @@ func (t *tally) reset() {
 	t.counts = make(map[string]map[int64]int)
 }
 
+type decisionLog struct {
+	mu         sync.Mutex
+	timestamps map[string][]int64
+}
+
+func newDecisionLog() *decisionLog {
+	return &decisionLog{timestamps: make(map[string][]int64)}
+}
+
+func (d *decisionLog) record(key string, decisionMs int64) {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	d.timestamps[key] = append(d.timestamps[key], decisionMs)
+}
+
+func (d *decisionLog) worstWindows(windowMs int64) map[string]int {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+
+	result := make(map[string]int)
+	for key, timestamps := range d.timestamps {
+		result[key] = rolling.MaxInWindow(timestamps, windowMs)
+	}
+	return result
+}
+
+func (d *decisionLog) reset() {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	d.timestamps = make(map[string][]int64)
+}
+
 type oracle struct {
 	byArrival  *tally
 	byDecision *tally
+	decisions  *decisionLog
 }
 
 func newOracle() *oracle {
-	return &oracle{byArrival: newTally(), byDecision: newTally()}
+	return &oracle{byArrival: newTally(), byDecision: newTally(), decisions: newDecisionLog()}
 }
 
 func (o *oracle) record(r *http.Request) {
@@ -68,6 +103,7 @@ func (o *oracle) record(r *http.Request) {
 	decisionMs, err := strconv.ParseInt(r.Header.Get("X-Headgate-Decision-Ms"), 10, 64)
 	if err == nil {
 		o.byDecision.record(key, decisionMs/1000)
+		o.decisions.record(key, decisionMs)
 	}
 }
 
@@ -81,6 +117,7 @@ func (o *oracle) snapshot() map[string]map[string]map[string]int {
 func (o *oracle) reset() {
 	o.byArrival.reset()
 	o.byDecision.reset()
+	o.decisions.reset()
 }
 
 func main() {
@@ -95,6 +132,15 @@ func main() {
 	mux.HandleFunc("GET /_stats", func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
 		json.NewEncoder(w).Encode(counts.snapshot())
+	})
+	mux.HandleFunc("GET /_rolling", func(w http.ResponseWriter, r *http.Request) {
+		windowMs, err := strconv.ParseInt(r.URL.Query().Get("window_ms"), 10, 64)
+		if err != nil || windowMs <= 0 {
+			http.Error(w, "window_ms must be a positive integer", http.StatusBadRequest)
+			return
+		}
+		w.Header().Set("Content-Type", "application/json")
+		json.NewEncoder(w).Encode(counts.decisions.worstWindows(windowMs))
 	})
 	mux.HandleFunc("POST /_reset", func(w http.ResponseWriter, r *http.Request) {
 		counts.reset()

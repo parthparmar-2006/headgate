@@ -21,6 +21,7 @@ services:
     environment:
       UPSTREAM_URL: http://upstream:9000
       LIMITER: ${LIMITER:-redis}
+      ALGORITHM: ${ALGORITHM:-sliding_log}
       REDIS_ADDR: redis:6379
       RATE_LIMIT: "100"
       RATE_WINDOW: 1s
@@ -36,6 +37,7 @@ services:
     environment:
       UPSTREAM_URL: http://upstream:9000
       LIMITER: ${LIMITER:-redis}
+      ALGORITHM: ${ALGORITHM:-sliding_log}
       REDIS_ADDR: redis:6379
       RATE_LIMIT: "100"
       RATE_WINDOW: 1s
@@ -51,6 +53,7 @@ services:
     environment:
       UPSTREAM_URL: http://upstream:9000
       LIMITER: ${LIMITER:-redis}
+      ALGORITHM: ${ALGORITHM:-sliding_log}
       REDIS_ADDR: redis:6379
       RATE_LIMIT: "100"
       RATE_WINDOW: 1s

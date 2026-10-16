@@ -20,6 +20,7 @@ type config struct {
 	upstreamURL *url.URL
 	rule        limiter.Rule
 	limiterKind string
+	algorithm   string
 	redisAddr   string
 }
 
@@ -41,25 +42,43 @@ func main() {
 		ReadHeaderTimeout: 5 * time.Second,
 	}
 
-	log.Printf("gateway listening on %s, upstream %s, limiter %s, limit %d per %s",
-		cfg.listenAddr, cfg.upstreamURL, cfg.limiterKind, cfg.rule.Limit, cfg.rule.Window)
+	log.Printf("gateway listening on %s, upstream %s, limiter %s, algorithm %s, limit %d per %s",
+		cfg.listenAddr, cfg.upstreamURL, cfg.limiterKind, cfg.algorithm, cfg.rule.Limit, cfg.rule.Window)
 	log.Fatal(server.ListenAndServe())
 }
 
 func buildLimiter(cfg config) (limiter.Limiter, error) {
 	if cfg.limiterKind == "memory" {
-		return limiter.NewMemoryFixedWindow(limiter.SystemClock{}), nil
+		return buildMemoryLimiter(cfg.algorithm)
+	}
+	if cfg.limiterKind != "redis" {
+		return nil, fmt.Errorf("unknown limiter %q", cfg.limiterKind)
 	}
 
 	client, err := connectRedis(cfg.redisAddr)
 	if err != nil {
 		return nil, err
 	}
+	return buildRedisLimiter(cfg.algorithm, client)
+}
 
-	if cfg.limiterKind == "redis" {
-		return limiter.NewRedisFixedWindow(client), nil
+func buildMemoryLimiter(algorithm string) (limiter.Limiter, error) {
+	if algorithm != "fixed_window" {
+		return nil, fmt.Errorf("memory limiter only supports fixed_window, got %q", algorithm)
 	}
-	return nil, fmt.Errorf("unknown limiter %q", cfg.limiterKind)
+	return limiter.NewMemoryFixedWindow(limiter.SystemClock{}), nil
+}
+
+func buildRedisLimiter(algorithm string, client *redis.Client) (limiter.Limiter, error) {
+	switch algorithm {
+	case "fixed_window":
+		return limiter.NewRedisFixedWindow(client), nil
+	case "sliding_log":
+		return limiter.NewRedisSlidingLog(client), nil
+	case "sliding_counter":
+		return limiter.NewRedisSlidingCounter(client), nil
+	}
+	return nil, fmt.Errorf("unknown algorithm %q", algorithm)
 }
 
 func connectRedis(addr string) (*redis.Client, error) {
@@ -96,6 +115,7 @@ func loadConfig() (config, error) {
 		upstreamURL: upstream,
 		rule:        limiter.Rule{Limit: limit, Window: window},
 		limiterKind: envOrDefault("LIMITER", "redis"),
+		algorithm:   envOrDefault("ALGORITHM", "sliding_log"),
 		redisAddr:   envOrDefault("REDIS_ADDR", "localhost:6379"),
 	}
 	return cfg, nil
