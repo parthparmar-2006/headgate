@@ -34,11 +34,11 @@ func (m *MemoryFixedWindow) Allow(ctx context.Context, key string, rule Rule) (D
 
 	counter := m.counterFor(key, windowStart)
 	if counter.count >= rule.Limit {
-		return Decision{Allowed: false, Remaining: 0, RetryAfter: windowEnd.Sub(now)}, nil
+		return Decision{Allowed: false, Remaining: 0, RetryAfter: windowEnd.Sub(now), DecidedAt: now}, nil
 	}
 
 	counter.count++
-	return Decision{Allowed: true, Remaining: rule.Limit - counter.count}, nil
+	return Decision{Allowed: true, Remaining: rule.Limit - counter.count, DecidedAt: now}, nil
 }
 
 func (m *MemoryFixedWindow) counterFor(key string, windowStart time.Time) *windowCounter {

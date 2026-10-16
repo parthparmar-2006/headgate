@@ -13,6 +13,8 @@ import (
 
 const APIKeyHeader = "X-API-Key"
 
+const DecisionTimeHeader = "X-Headgate-Decision-Ms"
+
 type Handler struct {
 	limiter limiter.Limiter
 	rule    limiter.Rule
@@ -57,6 +59,7 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	r.Header.Set(DecisionTimeHeader, strconv.FormatInt(decision.DecidedAt.UnixMilli(), 10))
 	h.proxy.ServeHTTP(w, r)
 }
 

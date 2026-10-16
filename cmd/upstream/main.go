@@ -52,13 +52,44 @@ func (t *tally) reset() {
 	t.counts = make(map[string]map[int64]int)
 }
 
+type oracle struct {
+	byArrival  *tally
+	byDecision *tally
+}
+
+func newOracle() *oracle {
+	return &oracle{byArrival: newTally(), byDecision: newTally()}
+}
+
+func (o *oracle) record(r *http.Request) {
+	key := r.Header.Get("X-API-Key")
+	o.byArrival.record(key, time.Now().Unix())
+
+	decisionMs, err := strconv.ParseInt(r.Header.Get("X-Headgate-Decision-Ms"), 10, 64)
+	if err == nil {
+		o.byDecision.record(key, decisionMs/1000)
+	}
+}
+
+func (o *oracle) snapshot() map[string]map[string]map[string]int {
+	return map[string]map[string]map[string]int{
+		"arrival":  o.byArrival.snapshot(),
+		"decision": o.byDecision.snapshot(),
+	}
+}
+
+func (o *oracle) reset() {
+	o.byArrival.reset()
+	o.byDecision.reset()
+}
+
 func main() {
 	listenAddr := os.Getenv("LISTEN_ADDR")
 	if listenAddr == "" {
 		listenAddr = ":9000"
 	}
 
-	counts := newTally()
+	counts := newOracle()
 
 	mux := http.NewServeMux()
 	mux.HandleFunc("GET /_stats", func(w http.ResponseWriter, r *http.Request) {
@@ -70,8 +101,7 @@ func main() {
 		w.WriteHeader(http.StatusNoContent)
 	})
 	mux.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {
-		key := r.Header.Get("X-API-Key")
-		counts.record(key, time.Now().Unix())
+		counts.record(r)
 		w.Write([]byte("ok"))
 	})
 

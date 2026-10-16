@@ -1,6 +1,8 @@
 package main
 
 import (
+	"context"
+	"fmt"
 	"log"
 	"net/http"
 	"net/url"
@@ -10,12 +12,15 @@ import (
 
 	"github.com/parthparmar-2006/headgate/internal/gateway"
 	"github.com/parthparmar-2006/headgate/internal/limiter"
+	"github.com/redis/go-redis/v9"
 )
 
 type config struct {
 	listenAddr  string
 	upstreamURL *url.URL
 	rule        limiter.Rule
+	limiterKind string
+	redisAddr   string
 }
 
 func main() {
@@ -24,7 +29,10 @@ func main() {
 		log.Fatalf("config: %v", err)
 	}
 
-	l := limiter.NewMemoryFixedWindow(limiter.SystemClock{})
+	l, err := buildLimiter(cfg)
+	if err != nil {
+		log.Fatalf("limiter: %v", err)
+	}
 	handler := gateway.NewHandler(l, cfg.rule, cfg.upstreamURL)
 
 	server := &http.Server{
@@ -33,9 +41,38 @@ func main() {
 		ReadHeaderTimeout: 5 * time.Second,
 	}
 
-	log.Printf("gateway listening on %s, upstream %s, limit %d per %s",
-		cfg.listenAddr, cfg.upstreamURL, cfg.rule.Limit, cfg.rule.Window)
+	log.Printf("gateway listening on %s, upstream %s, limiter %s, limit %d per %s",
+		cfg.listenAddr, cfg.upstreamURL, cfg.limiterKind, cfg.rule.Limit, cfg.rule.Window)
 	log.Fatal(server.ListenAndServe())
+}
+
+func buildLimiter(cfg config) (limiter.Limiter, error) {
+	if cfg.limiterKind == "memory" {
+		return limiter.NewMemoryFixedWindow(limiter.SystemClock{}), nil
+	}
+
+	client, err := connectRedis(cfg.redisAddr)
+	if err != nil {
+		return nil, err
+	}
+
+	if cfg.limiterKind == "redis" {
+		return limiter.NewRedisFixedWindow(client), nil
+	}
+	return nil, fmt.Errorf("unknown limiter %q", cfg.limiterKind)
+}
+
+func connectRedis(addr string) (*redis.Client, error) {
+	client := redis.NewClient(&redis.Options{Addr: addr})
+
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+
+	err := client.Ping(ctx).Err()
+	if err != nil {
+		return nil, fmt.Errorf("redis at %s: %w", addr, err)
+	}
+	return client, nil
 }
 
 func loadConfig() (config, error) {
@@ -58,6 +95,8 @@ func loadConfig() (config, error) {
 		listenAddr:  envOrDefault("LISTEN_ADDR", ":8080"),
 		upstreamURL: upstream,
 		rule:        limiter.Rule{Limit: limit, Window: window},
+		limiterKind: envOrDefault("LIMITER", "redis"),
+		redisAddr:   envOrDefault("REDIS_ADDR", "localhost:6379"),
 	}
 	return cfg, nil
 }

@@ -10,6 +10,8 @@ const ratePerKey = parseInt(__ENV.RATE_PER_KEY || '600', 10);
 const duration = __ENV.DURATION || '30s';
 const edgeWindowsToSkip = 2;
 
+http.setResponseCallback(http.expectedStatuses(200, 429));
+
 export const options = {
   scenarios: {
     overshoot: {
@@ -41,14 +43,22 @@ export default function () {
 
 export function teardown() {
   const stats = http.get(`${upstreamURL}/_stats`).json();
-  const report = [];
+  const result = {
+    limitPerWindow,
+    replicas: targets.length,
+    byDecision: reportFor(stats.decision),
+    byArrival: reportFor(stats.arrival),
+  };
+  console.log(JSON.stringify(result, null, 2));
+}
 
-  for (const apiKey of Object.keys(stats).sort()) {
-    const counts = fullWindowCounts(stats[apiKey]);
+function reportFor(countsByKey) {
+  const report = [];
+  for (const apiKey of Object.keys(countsByKey).sort()) {
+    const counts = fullWindowCounts(countsByKey[apiKey]);
     report.push(summarize(apiKey, counts));
   }
-
-  console.log(JSON.stringify({ limitPerWindow, replicas: targets.length, report }, null, 2));
+  return report;
 }
 
 function fullWindowCounts(perSecond) {
@@ -61,18 +71,23 @@ function summarize(apiKey, counts) {
   let total = 0;
   let min = Infinity;
   let max = 0;
+  let windowsOverLimit = 0;
   for (const count of counts) {
     total += count;
     min = Math.min(min, count);
     max = Math.max(max, count);
+    if (count > limitPerWindow) {
+      windowsOverLimit++;
+    }
   }
   const mean = total / counts.length;
   return {
     apiKey,
     windows: counts.length,
     min,
-    mean: Number(mean.toFixed(1)),
+    mean: Number(mean.toFixed(2)),
     max,
-    meanOverLimit: Number((mean / limitPerWindow).toFixed(3)),
+    windowsOverLimit,
+    meanOverLimit: Number((mean / limitPerWindow).toFixed(4)),
   };
 }

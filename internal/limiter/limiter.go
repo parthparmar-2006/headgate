@@ -14,6 +14,7 @@ type Decision struct {
 	Allowed    bool
 	Remaining  int
 	RetryAfter time.Duration
+	DecidedAt  time.Time
 }
 
 type Limiter interface {

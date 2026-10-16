@@ -1,6 +1,12 @@
 name: headgate
 
 services:
+  redis:
+    image: redis:7.4-alpine
+    command: ["redis-server", "--save", "", "--appendonly", "no"]
+    ports:
+      - "6379:6379"
+
   upstream:
     build:
       context: ..
@@ -14,36 +20,45 @@ services:
     command: ["gateway"]
     environment:
       UPSTREAM_URL: http://upstream:9000
+      LIMITER: ${LIMITER:-redis}
+      REDIS_ADDR: redis:6379
       RATE_LIMIT: "100"
       RATE_WINDOW: 1s
     ports:
       - "8081:8080"
     depends_on:
       - upstream
+      - redis
 
   gateway-2:
     image: headgate:dev
     command: ["gateway"]
     environment:
       UPSTREAM_URL: http://upstream:9000
+      LIMITER: ${LIMITER:-redis}
+      REDIS_ADDR: redis:6379
       RATE_LIMIT: "100"
       RATE_WINDOW: 1s
     ports:
       - "8082:8080"
     depends_on:
       - upstream
+      - redis
 
   gateway-3:
     image: headgate:dev
     command: ["gateway"]
     environment:
       UPSTREAM_URL: http://upstream:9000
+      LIMITER: ${LIMITER:-redis}
+      REDIS_ADDR: redis:6379
       RATE_LIMIT: "100"
       RATE_WINDOW: 1s
     ports:
       - "8083:8080"
     depends_on:
       - upstream
+      - redis
 
   k6:
     image: grafana/k6:0.54.0
@@ -54,3 +69,6 @@ services:
       TARGETS: http://gateway-1:8080,http://gateway-2:8080,http://gateway-3:8080
       UPSTREAM_URL: http://upstream:9000
       RATE_LIMIT: "100"
+      KEY_COUNT: ${KEY_COUNT:-5}
+      RATE_PER_KEY: ${RATE_PER_KEY:-600}
+      DURATION: ${DURATION:-30s}

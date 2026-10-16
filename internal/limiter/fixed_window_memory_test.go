@@ -107,6 +107,9 @@ func TestFixedWindowRetryAfterIsTimeToWindowEnd(t *testing.T) {
 	if decision.RetryAfter != 700*time.Millisecond {
 		t.Fatalf("retry after %v, want 700ms", decision.RetryAfter)
 	}
+	if !decision.DecidedAt.Equal(clock.Now()) {
+		t.Fatalf("decided at %v, want %v", decision.DecidedAt, clock.Now())
+	}
 }
 
 func TestFixedWindowAllowsDoubleLimitAcrossBoundary(t *testing.T) {
