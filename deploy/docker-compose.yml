@@ -1,0 +1,56 @@
+name: headgate
+
+services:
+  upstream:
+    build:
+      context: ..
+    image: headgate:dev
+    command: ["upstream"]
+    ports:
+      - "9000:9000"
+
+  gateway-1:
+    image: headgate:dev
+    command: ["gateway"]
+    environment:
+      UPSTREAM_URL: http://upstream:9000
+      RATE_LIMIT: "100"
+      RATE_WINDOW: 1s
+    ports:
+      - "8081:8080"
+    depends_on:
+      - upstream
+
+  gateway-2:
+    image: headgate:dev
+    command: ["gateway"]
+    environment:
+      UPSTREAM_URL: http://upstream:9000
+      RATE_LIMIT: "100"
+      RATE_WINDOW: 1s
+    ports:
+      - "8082:8080"
+    depends_on:
+      - upstream
+
+  gateway-3:
+    image: headgate:dev
+    command: ["gateway"]
+    environment:
+      UPSTREAM_URL: http://upstream:9000
+      RATE_LIMIT: "100"
+      RATE_WINDOW: 1s
+    ports:
+      - "8083:8080"
+    depends_on:
+      - upstream
+
+  k6:
+    image: grafana/k6:0.54.0
+    profiles: ["bench"]
+    volumes:
+      - ../bench/k6:/scripts:ro
+    environment:
+      TARGETS: http://gateway-1:8080,http://gateway-2:8080,http://gateway-3:8080
+      UPSTREAM_URL: http://upstream:9000
+      RATE_LIMIT: "100"
