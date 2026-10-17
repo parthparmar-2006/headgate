@@ -19,12 +19,12 @@ services:
     image: headgate:dev
     command: ["gateway"]
     environment:
-      UPSTREAM_URL: http://upstream:9000
-      LIMITER: ${LIMITER:-redis}
+      CONFIG_FILE: /etc/headgate/headgate.yaml
+      BACKEND: ${BACKEND:-redis}
       ALGORITHM: ${ALGORITHM:-sliding_log}
-      REDIS_ADDR: redis:6379
-      RATE_LIMIT: "100"
-      RATE_WINDOW: 1s
+      MIN_IDLE_CONNS: ${MIN_IDLE_CONNS:-16}
+    volumes:
+      - ./headgate.yaml:/etc/headgate/headgate.yaml:ro
     ports:
       - "8081:8080"
     depends_on:
@@ -35,12 +35,12 @@ services:
     image: headgate:dev
     command: ["gateway"]
     environment:
-      UPSTREAM_URL: http://upstream:9000
-      LIMITER: ${LIMITER:-redis}
+      CONFIG_FILE: /etc/headgate/headgate.yaml
+      BACKEND: ${BACKEND:-redis}
       ALGORITHM: ${ALGORITHM:-sliding_log}
-      REDIS_ADDR: redis:6379
-      RATE_LIMIT: "100"
-      RATE_WINDOW: 1s
+      MIN_IDLE_CONNS: ${MIN_IDLE_CONNS:-16}
+    volumes:
+      - ./headgate.yaml:/etc/headgate/headgate.yaml:ro
     ports:
       - "8082:8080"
     depends_on:
@@ -51,12 +51,12 @@ services:
     image: headgate:dev
     command: ["gateway"]
     environment:
-      UPSTREAM_URL: http://upstream:9000
-      LIMITER: ${LIMITER:-redis}
+      CONFIG_FILE: /etc/headgate/headgate.yaml
+      BACKEND: ${BACKEND:-redis}
       ALGORITHM: ${ALGORITHM:-sliding_log}
-      REDIS_ADDR: redis:6379
-      RATE_LIMIT: "100"
-      RATE_WINDOW: 1s
+      MIN_IDLE_CONNS: ${MIN_IDLE_CONNS:-16}
+    volumes:
+      - ./headgate.yaml:/etc/headgate/headgate.yaml:ro
     ports:
       - "8083:8080"
     depends_on:
@@ -68,6 +68,7 @@ services:
     profiles: ["bench"]
     volumes:
       - ../bench/k6:/scripts:ro
+      - ${RESULTS_DIR:-../bench/results}:/results
     environment:
       TARGETS: http://gateway-1:8080,http://gateway-2:8080,http://gateway-3:8080
       UPSTREAM_URL: http://upstream:9000

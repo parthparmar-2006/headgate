@@ -1,6 +1,7 @@
 package gateway
 
 import (
+	"context"
 	"math"
 	"net/http"
 	"net/http/httputil"
@@ -15,20 +16,22 @@ const APIKeyHeader = "X-API-Key"
 
 const DecisionTimeHeader = "X-Headgate-Decision-Ms"
 
+const LimiterStatusHeader = "X-Headgate-Limiter"
+
 type Handler struct {
-	limiter limiter.Limiter
-	rule    limiter.Rule
-	proxy   *httputil.ReverseProxy
+	router         *Router
+	proxy          *httputil.ReverseProxy
+	limiterTimeout time.Duration
 }
 
-func NewHandler(l limiter.Limiter, rule limiter.Rule, upstream *url.URL) *Handler {
+func NewHandler(router *Router, upstream *url.URL, limiterTimeout time.Duration) *Handler {
 	proxy := httputil.NewSingleHostReverseProxy(upstream)
 	proxy.Transport = newUpstreamTransport()
 
 	return &Handler{
-		limiter: l,
-		rule:    rule,
-		proxy:   proxy,
+		router:         router,
+		proxy:          proxy,
+		limiterTimeout: limiterTimeout,
 	}
 }
 
@@ -41,19 +44,25 @@ func newUpstreamTransport() *http.Transport {
 }
 
 func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
+	route, found := h.router.Match(r.URL.Path)
+	if !found {
+		http.NotFound(w, r)
+		return
+	}
+
 	apiKey := r.Header.Get(APIKeyHeader)
 	if apiKey == "" {
 		http.Error(w, "missing API key", http.StatusUnauthorized)
 		return
 	}
 
-	decision, err := h.limiter.Allow(r.Context(), apiKey, h.rule)
+	decision, err := h.decide(r.Context(), route, apiKey)
 	if err != nil {
-		http.Error(w, "rate limiter unavailable", http.StatusServiceUnavailable)
+		h.handleLimiterError(w, r, route)
 		return
 	}
 
-	writeRateLimitHeaders(w, h.rule, decision)
+	writeRateLimitHeaders(w, route.Rule, decision)
 	if !decision.Allowed {
 		writeTooManyRequests(w, decision)
 		return
@@ -61,6 +70,26 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 
 	r.Header.Set(DecisionTimeHeader, strconv.FormatInt(decision.DecidedAt.UnixMilli(), 10))
 	h.proxy.ServeHTTP(w, r)
+}
+
+func (h *Handler) decide(ctx context.Context, route Route, apiKey string) (limiter.Decision, error) {
+	ctx, cancel := context.WithTimeout(ctx, h.limiterTimeout)
+	defer cancel()
+
+	limiterKey := route.Name + ":" + apiKey
+	return route.Limiter.Allow(ctx, limiterKey, route.Rule)
+}
+
+func (h *Handler) handleLimiterError(w http.ResponseWriter, r *http.Request, route Route) {
+	if route.FailOpen {
+		w.Header().Set(LimiterStatusHeader, "fail-open")
+		h.proxy.ServeHTTP(w, r)
+		return
+	}
+
+	w.Header().Set(LimiterStatusHeader, "fail-closed")
+	w.Header().Set("Retry-After", "1")
+	http.Error(w, "rate limiter unavailable", http.StatusServiceUnavailable)
 }
 
 func writeRateLimitHeaders(w http.ResponseWriter, rule limiter.Rule, decision limiter.Decision) {

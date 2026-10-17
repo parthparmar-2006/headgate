@@ -1,0 +1,30 @@
+listen: ":8080"
+upstream: "http://upstream:9000"
+backend: ${BACKEND}
+
+redis:
+  addr: "redis:6379"
+  timeout: 50ms
+  min_idle_conns: ${MIN_IDLE_CONNS}
+
+routes:
+  - name: default
+    path_prefix: /
+    algorithm: ${ALGORITHM}
+    limit: 100
+    window: 1s
+    on_redis_error: fail_closed
+
+  - name: open
+    path_prefix: /open
+    algorithm: sliding_log
+    limit: 100
+    window: 1s
+    on_redis_error: fail_open
+
+  - name: closed
+    path_prefix: /closed
+    algorithm: sliding_log
+    limit: 100
+    window: 1s
+    on_redis_error: fail_closed

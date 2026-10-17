@@ -7,69 +7,88 @@ import (
 	"net/http"
 	"net/url"
 	"os"
-	"strconv"
 	"time"
 
+	"github.com/parthparmar-2006/headgate/internal/config"
 	"github.com/parthparmar-2006/headgate/internal/gateway"
 	"github.com/parthparmar-2006/headgate/internal/limiter"
 	"github.com/redis/go-redis/v9"
 )
 
-type config struct {
-	listenAddr  string
-	upstreamURL *url.URL
-	rule        limiter.Rule
-	limiterKind string
-	algorithm   string
-	redisAddr   string
-}
-
 func main() {
-	cfg, err := loadConfig()
+	configPath := os.Getenv("CONFIG_FILE")
+	if configPath == "" {
+		configPath = "headgate.yaml"
+	}
+
+	cfg, err := config.Load(configPath)
 	if err != nil {
 		log.Fatalf("config: %v", err)
 	}
 
-	l, err := buildLimiter(cfg)
+	upstream, err := url.Parse(cfg.Upstream)
 	if err != nil {
-		log.Fatalf("limiter: %v", err)
+		log.Fatalf("upstream url: %v", err)
 	}
-	handler := gateway.NewHandler(l, cfg.rule, cfg.upstreamURL)
 
+	routes, err := buildRoutes(cfg)
+	if err != nil {
+		log.Fatalf("routes: %v", err)
+	}
+
+	handler := gateway.NewHandler(gateway.NewRouter(routes), upstream, limiterTimeout(cfg))
 	server := &http.Server{
-		Addr:              cfg.listenAddr,
+		Addr:              cfg.Listen,
 		Handler:           handler,
 		ReadHeaderTimeout: 5 * time.Second,
 	}
 
-	log.Printf("gateway listening on %s, upstream %s, limiter %s, algorithm %s, limit %d per %s",
-		cfg.listenAddr, cfg.upstreamURL, cfg.limiterKind, cfg.algorithm, cfg.rule.Limit, cfg.rule.Window)
+	log.Printf("gateway listening on %s, upstream %s, backend %s", cfg.Listen, cfg.Upstream, cfg.Backend)
+	for _, route := range cfg.Routes {
+		log.Printf("route %s %s: %s %d per %s, %s",
+			route.Name, route.PathPrefix, route.Algorithm, route.Limit, route.Window, route.OnRedisError)
+	}
 	log.Fatal(server.ListenAndServe())
 }
 
-func buildLimiter(cfg config) (limiter.Limiter, error) {
-	if cfg.limiterKind == "memory" {
-		return buildMemoryLimiter(cfg.algorithm)
+func limiterTimeout(cfg config.Config) time.Duration {
+	if cfg.Backend == "memory" {
+		return time.Second
 	}
-	if cfg.limiterKind != "redis" {
-		return nil, fmt.Errorf("unknown limiter %q", cfg.limiterKind)
-	}
-
-	client, err := connectRedis(cfg.redisAddr)
-	if err != nil {
-		return nil, err
-	}
-	return buildRedisLimiter(cfg.algorithm, client)
+	return cfg.Redis.Timeout
 }
 
-func buildMemoryLimiter(algorithm string) (limiter.Limiter, error) {
-	if algorithm != "fixed_window" {
-		return nil, fmt.Errorf("memory limiter only supports fixed_window, got %q", algorithm)
+func buildRoutes(cfg config.Config) ([]gateway.Route, error) {
+	var client *redis.Client
+	if cfg.Backend == "redis" {
+		client = limiter.NewRedisClient(cfg.Redis.Addr, cfg.Redis.MinIdleConns)
+		warnIfRedisUnreachable(client, cfg.Redis.Addr)
 	}
-	return limiter.NewMemoryFixedWindow(limiter.SystemClock{}), nil
+
+	routes := []gateway.Route{}
+	for _, routeConfig := range cfg.Routes {
+		l, err := buildLimiter(cfg.Backend, routeConfig.Algorithm, client)
+		if err != nil {
+			return nil, fmt.Errorf("route %s: %w", routeConfig.Name, err)
+		}
+
+		route := gateway.Route{
+			Name:       routeConfig.Name,
+			PathPrefix: routeConfig.PathPrefix,
+			Rule:       limiter.Rule{Limit: routeConfig.Limit, Window: routeConfig.Window},
+			Limiter:    l,
+			FailOpen:   routeConfig.OnRedisError == config.FailOpen,
+		}
+		routes = append(routes, route)
+	}
+	return routes, nil
 }
 
-func buildRedisLimiter(algorithm string, client *redis.Client) (limiter.Limiter, error) {
+func buildLimiter(backend string, algorithm string, client *redis.Client) (limiter.Limiter, error) {
+	if backend == "memory" {
+		return limiter.NewMemoryFixedWindow(limiter.SystemClock{}), nil
+	}
+
 	switch algorithm {
 	case "fixed_window":
 		return limiter.NewRedisFixedWindow(client), nil
@@ -81,50 +100,12 @@ func buildRedisLimiter(algorithm string, client *redis.Client) (limiter.Limiter,
 	return nil, fmt.Errorf("unknown algorithm %q", algorithm)
 }
 
-func connectRedis(addr string) (*redis.Client, error) {
-	client := redis.NewClient(&redis.Options{Addr: addr})
-
-	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+func warnIfRedisUnreachable(client *redis.Client, addr string) {
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
 	defer cancel()
 
 	err := client.Ping(ctx).Err()
 	if err != nil {
-		return nil, fmt.Errorf("redis at %s: %w", addr, err)
+		log.Printf("warning: redis at %s unreachable at startup, routes will use their failure policy: %v", addr, err)
 	}
-	return client, nil
-}
-
-func loadConfig() (config, error) {
-	upstream, err := url.Parse(envOrDefault("UPSTREAM_URL", "http://localhost:9000"))
-	if err != nil {
-		return config{}, err
-	}
-
-	limit, err := strconv.Atoi(envOrDefault("RATE_LIMIT", "100"))
-	if err != nil {
-		return config{}, err
-	}
-
-	window, err := time.ParseDuration(envOrDefault("RATE_WINDOW", "1s"))
-	if err != nil {
-		return config{}, err
-	}
-
-	cfg := config{
-		listenAddr:  envOrDefault("LISTEN_ADDR", ":8080"),
-		upstreamURL: upstream,
-		rule:        limiter.Rule{Limit: limit, Window: window},
-		limiterKind: envOrDefault("LIMITER", "redis"),
-		algorithm:   envOrDefault("ALGORITHM", "sliding_log"),
-		redisAddr:   envOrDefault("REDIS_ADDR", "localhost:6379"),
-	}
-	return cfg, nil
-}
-
-func envOrDefault(name string, fallback string) string {
-	value := os.Getenv(name)
-	if value == "" {
-		return fallback
-	}
-	return value
 }
