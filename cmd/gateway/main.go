@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"log"
 	"net/http"
+	"net/http/pprof"
 	"net/url"
 	"os"
 	"time"
@@ -57,6 +58,8 @@ func startMetricsServer(addr string, m *metrics.Metrics) {
 
 	mux := http.NewServeMux()
 	mux.Handle("GET /metrics", m.Handler())
+	mux.HandleFunc("/debug/pprof/", pprof.Index)
+	mux.HandleFunc("/debug/pprof/profile", pprof.Profile)
 	server := &http.Server{
 		Addr:              addr,
 		Handler:           mux,

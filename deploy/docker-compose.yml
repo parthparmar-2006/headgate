@@ -1,5 +1,21 @@
 name: headgate
 
+x-gateway: &gateway
+  image: headgate:dev
+  command: ["gateway"]
+  environment:
+    CONFIG_FILE: /etc/headgate/headgate.yaml
+    BACKEND: ${BACKEND:-redis}
+    ALGORITHM: ${ALGORITHM:-sliding_log}
+    MIN_IDLE_CONNS: ${MIN_IDLE_CONNS:-16}
+    DENY_CACHE: ${DENY_CACHE:-true}
+    GOMAXPROCS: ${GOMAXPROCS:-8}
+  volumes:
+    - ./headgate.yaml:/etc/headgate/headgate.yaml:ro
+  depends_on:
+    - upstream
+    - redis
+
 services:
   redis:
     image: redis:7.4-alpine
@@ -16,58 +32,57 @@ services:
       - "9000:9000"
 
   gateway-1:
-    image: headgate:dev
-    command: ["gateway"]
-    environment:
-      CONFIG_FILE: /etc/headgate/headgate.yaml
-      BACKEND: ${BACKEND:-redis}
-      ALGORITHM: ${ALGORITHM:-sliding_log}
-      MIN_IDLE_CONNS: ${MIN_IDLE_CONNS:-16}
-      DENY_CACHE: ${DENY_CACHE:-true}
-    volumes:
-      - ./headgate.yaml:/etc/headgate/headgate.yaml:ro
+    <<: *gateway
     ports:
       - "8081:8080"
       - "9101:9100"
-    depends_on:
-      - upstream
-      - redis
 
   gateway-2:
-    image: headgate:dev
-    command: ["gateway"]
-    environment:
-      CONFIG_FILE: /etc/headgate/headgate.yaml
-      BACKEND: ${BACKEND:-redis}
-      ALGORITHM: ${ALGORITHM:-sliding_log}
-      MIN_IDLE_CONNS: ${MIN_IDLE_CONNS:-16}
-      DENY_CACHE: ${DENY_CACHE:-true}
-    volumes:
-      - ./headgate.yaml:/etc/headgate/headgate.yaml:ro
+    <<: *gateway
     ports:
       - "8082:8080"
       - "9102:9100"
-    depends_on:
-      - upstream
-      - redis
 
   gateway-3:
-    image: headgate:dev
-    command: ["gateway"]
-    environment:
-      CONFIG_FILE: /etc/headgate/headgate.yaml
-      BACKEND: ${BACKEND:-redis}
-      ALGORITHM: ${ALGORITHM:-sliding_log}
-      MIN_IDLE_CONNS: ${MIN_IDLE_CONNS:-16}
-      DENY_CACHE: ${DENY_CACHE:-true}
-    volumes:
-      - ./headgate.yaml:/etc/headgate/headgate.yaml:ro
+    <<: *gateway
     ports:
       - "8083:8080"
       - "9103:9100"
-    depends_on:
-      - upstream
-      - redis
+
+  gateway-4:
+    <<: *gateway
+    profiles: ["scale"]
+    ports:
+      - "8084:8080"
+      - "9104:9100"
+
+  gateway-5:
+    <<: *gateway
+    profiles: ["scale"]
+    ports:
+      - "8085:8080"
+      - "9105:9100"
+
+  gateway-6:
+    <<: *gateway
+    profiles: ["scale"]
+    ports:
+      - "8086:8080"
+      - "9106:9100"
+
+  gateway-7:
+    <<: *gateway
+    profiles: ["scale"]
+    ports:
+      - "8087:8080"
+      - "9107:9100"
+
+  gateway-8:
+    <<: *gateway
+    profiles: ["scale"]
+    ports:
+      - "8088:8080"
+      - "9108:9100"
 
   k6:
     image: grafana/k6:0.54.0
@@ -76,7 +91,7 @@ services:
       - ../bench/k6:/scripts:ro
       - ${RESULTS_DIR:-../bench/results}:/results
     environment:
-      TARGETS: http://gateway-1:8080,http://gateway-2:8080,http://gateway-3:8080
+      TARGETS: ${TARGETS:-http://gateway-1:8080,http://gateway-2:8080,http://gateway-3:8080}
       UPSTREAM_URL: http://upstream:9000
       RATE_LIMIT: "100"
       KEY_COUNT: ${KEY_COUNT:-5}
