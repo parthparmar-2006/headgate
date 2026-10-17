@@ -11,24 +11,40 @@ deny_cache:
   enabled: ${DENY_CACHE}
   max_keys: 100000
 
+tenants:
+  acme: [key-0, key-1]
+  globex: [key-2]
+
 routes:
   - name: default
     path_prefix: /
     algorithm: ${ALGORITHM}
-    limit: 100
-    window: 1s
     on_redis_error: fail_closed
+    limits:
+      - per: key
+        limit: 100
+        window: 1s
+      - per: tenant
+        limit: 150
+        window: 1s
+      - per: route
+        limit: 1000
+        window: 1s
 
   - name: open
     path_prefix: /open
     algorithm: sliding_log
-    limit: 100
-    window: 1s
     on_redis_error: fail_open
+    limits:
+      - per: key
+        limit: 100
+        window: 1s
 
   - name: closed
     path_prefix: /closed
     algorithm: sliding_log
-    limit: 100
-    window: 1s
     on_redis_error: fail_closed
+    limits:
+      - per: key
+        limit: 100
+        window: 1s

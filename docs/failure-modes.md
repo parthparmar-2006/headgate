@@ -12,15 +12,19 @@ routes:
   - name: payments
     path_prefix: /payments
     algorithm: sliding_log
-    limit: 100
-    window: 1s
     on_redis_error: fail_closed   # reject with 503 + Retry-After: 1
+    limits:
+      - per: key
+        limit: 100
+        window: 1s
   - name: catalog
     path_prefix: /catalog
     algorithm: sliding_counter
-    limit: 1000
-    window: 1s
     on_redis_error: fail_open     # forward without limiting
+    limits:
+      - per: key
+        limit: 1000
+        window: 1s
 ```
 
 Degraded responses carry `X-Headgate-Limiter: fail-open` or `fail-closed`, so they can be counted.

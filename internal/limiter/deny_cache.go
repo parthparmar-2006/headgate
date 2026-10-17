@@ -2,6 +2,7 @@ package limiter
 
 import (
 	"context"
+	"strings"
 	"sync"
 	"time"
 )
@@ -13,8 +14,13 @@ type DenyCache struct {
 	clock       Clock
 	maxKeys     int
 	mu          sync.Mutex
-	deniedUntil map[string]time.Time
+	deniedUntil map[string]cachedDenial
 	lastSweep   time.Time
+}
+
+type cachedDenial struct {
+	until      time.Time
+	checkIndex int
 }
 
 func NewDenyCache(inner Limiter, clock Clock, maxKeys int) *DenyCache {
@@ -22,23 +28,34 @@ func NewDenyCache(inner Limiter, clock Clock, maxKeys int) *DenyCache {
 		inner:       inner,
 		clock:       clock,
 		maxKeys:     maxKeys,
-		deniedUntil: make(map[string]time.Time),
+		deniedUntil: make(map[string]cachedDenial),
 	}
 }
 
-func (c *DenyCache) Allow(ctx context.Context, key string, rule Rule) (Decision, error) {
+func (c *DenyCache) Allow(ctx context.Context, checks []Check) (Decision, error) {
+	cacheKey := cacheKeyFor(checks)
 	now := c.clock.Now()
-	until, cached := c.lookup(key, now)
+	denial, cached := c.lookup(cacheKey, now)
 	if cached {
-		return Decision{Allowed: false, RetryAfter: until.Sub(now), DecidedAt: now}, nil
+		decision := Decision{
+			Allowed:    false,
+			RetryAfter: denial.until.Sub(now),
+			DecidedAt:  now,
+			CheckIndex: denial.checkIndex,
+		}
+		return decision, nil
 	}
 
-	decision, err := c.inner.Allow(ctx, key, rule)
+	decision, err := c.inner.Allow(ctx, checks)
 	if err != nil {
 		return decision, err
 	}
 	if !decision.Allowed && decision.RetryAfter > 0 {
-		c.remember(key, c.clock.Now().Add(decision.RetryAfter))
+		denial := cachedDenial{
+			until:      c.clock.Now().Add(decision.RetryAfter),
+			checkIndex: decision.CheckIndex,
+		}
+		c.remember(cacheKey, denial)
 	}
 	return decision, nil
 }
@@ -49,22 +66,30 @@ func (c *DenyCache) Size() int {
 	return len(c.deniedUntil)
 }
 
-func (c *DenyCache) lookup(key string, now time.Time) (time.Time, bool) {
+func cacheKeyFor(checks []Check) string {
+	keys := make([]string, len(checks))
+	for i, check := range checks {
+		keys[i] = check.Key
+	}
+	return strings.Join(keys, "|")
+}
+
+func (c *DenyCache) lookup(cacheKey string, now time.Time) (cachedDenial, bool) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 
-	until, found := c.deniedUntil[key]
+	denial, found := c.deniedUntil[cacheKey]
 	if !found {
-		return time.Time{}, false
+		return cachedDenial{}, false
 	}
-	if !now.Before(until) {
-		delete(c.deniedUntil, key)
-		return time.Time{}, false
+	if !now.Before(denial.until) {
+		delete(c.deniedUntil, cacheKey)
+		return cachedDenial{}, false
 	}
-	return until, true
+	return denial, true
 }
 
-func (c *DenyCache) remember(key string, until time.Time) {
+func (c *DenyCache) remember(cacheKey string, denial cachedDenial) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 
@@ -74,7 +99,7 @@ func (c *DenyCache) remember(key string, until time.Time) {
 	if len(c.deniedUntil) >= c.maxKeys {
 		return
 	}
-	c.deniedUntil[key] = until
+	c.deniedUntil[cacheKey] = denial
 }
 
 func (c *DenyCache) sweepIfDue() {
@@ -84,9 +109,9 @@ func (c *DenyCache) sweepIfDue() {
 	}
 	c.lastSweep = now
 
-	for key, until := range c.deniedUntil {
-		if !now.Before(until) {
-			delete(c.deniedUntil, key)
+	for cacheKey, denial := range c.deniedUntil {
+		if !now.Before(denial.until) {
+			delete(c.deniedUntil, cacheKey)
 		}
 	}
 }

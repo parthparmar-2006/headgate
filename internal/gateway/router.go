@@ -7,12 +7,23 @@ import (
 	"github.com/parthparmar-2006/headgate/internal/limiter"
 )
 
+const (
+	ScopeKey    = "key"
+	ScopeTenant = "tenant"
+	ScopeRoute  = "route"
+)
+
 type Route struct {
 	Name       string
 	PathPrefix string
-	Rule       limiter.Rule
+	Limits     []RouteLimit
 	Limiter    limiter.Limiter
 	FailOpen   bool
+}
+
+type RouteLimit struct {
+	Scope string
+	Rule  limiter.Rule
 }
 
 type Router struct {

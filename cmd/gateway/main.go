@@ -36,20 +36,26 @@ func main() {
 		log.Fatalf("routes: %v", err)
 	}
 
-	handler := gateway.NewHandler(gateway.NewRouter(routes), upstream, limiterTimeout(cfg))
+	handler := gateway.NewHandler(gateway.NewRouter(routes), cfg.TenantByKey(), upstream, limiterTimeout(cfg))
 	server := &http.Server{
 		Addr:              cfg.Listen,
 		Handler:           handler,
 		ReadHeaderTimeout: 5 * time.Second,
 	}
 
-	log.Printf("gateway listening on %s, upstream %s, backend %s, deny cache %t",
-		cfg.Listen, cfg.Upstream, cfg.Backend, cfg.DenyCache.Enabled)
-	for _, route := range cfg.Routes {
-		log.Printf("route %s %s: %s %d per %s, %s",
-			route.Name, route.PathPrefix, route.Algorithm, route.Limit, route.Window, route.OnRedisError)
-	}
+	logStartup(cfg)
 	log.Fatal(server.ListenAndServe())
+}
+
+func logStartup(cfg config.Config) {
+	log.Printf("gateway listening on %s, upstream %s, backend %s, deny cache %t, %d tenants",
+		cfg.Listen, cfg.Upstream, cfg.Backend, cfg.DenyCache.Enabled, len(cfg.Tenants))
+	for _, route := range cfg.Routes {
+		log.Printf("route %s %s: %s, %s", route.Name, route.PathPrefix, route.Algorithm, route.OnRedisError)
+		for _, limit := range route.Limits {
+			log.Printf("  per %s: %d per %s", limit.Per, limit.Limit, limit.Window)
+		}
+	}
 }
 
 func limiterTimeout(cfg config.Config) time.Duration {
@@ -79,13 +85,24 @@ func buildRoutes(cfg config.Config) ([]gateway.Route, error) {
 		route := gateway.Route{
 			Name:       routeConfig.Name,
 			PathPrefix: routeConfig.PathPrefix,
-			Rule:       limiter.Rule{Limit: routeConfig.Limit, Window: routeConfig.Window},
+			Limits:     routeLimits(routeConfig.Limits),
 			Limiter:    l,
 			FailOpen:   routeConfig.OnRedisError == config.FailOpen,
 		}
 		routes = append(routes, route)
 	}
 	return routes, nil
+}
+
+func routeLimits(limitConfigs []config.LimitConfig) []gateway.RouteLimit {
+	limits := make([]gateway.RouteLimit, len(limitConfigs))
+	for i, limitConfig := range limitConfigs {
+		limits[i] = gateway.RouteLimit{
+			Scope: limitConfig.Per,
+			Rule:  limiter.Rule{Limit: limitConfig.Limit, Window: limitConfig.Window},
+		}
+	}
+	return limits
 }
 
 func buildLimiter(backend string, algorithm string, client *redis.Client) (limiter.Limiter, error) {

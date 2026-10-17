@@ -15,13 +15,22 @@ const (
 	FailClosed = "fail_closed"
 )
 
+const (
+	PerKey    = "key"
+	PerTenant = "tenant"
+	PerRoute  = "route"
+)
+
+const UnassignedTenant = "_unassigned"
+
 type Config struct {
-	Listen    string          `yaml:"listen"`
-	Upstream  string          `yaml:"upstream"`
-	Backend   string          `yaml:"backend"`
-	Redis     RedisConfig     `yaml:"redis"`
-	DenyCache DenyCacheConfig `yaml:"deny_cache"`
-	Routes    []RouteConfig   `yaml:"routes"`
+	Listen    string              `yaml:"listen"`
+	Upstream  string              `yaml:"upstream"`
+	Backend   string              `yaml:"backend"`
+	Redis     RedisConfig         `yaml:"redis"`
+	DenyCache DenyCacheConfig     `yaml:"deny_cache"`
+	Tenants   map[string][]string `yaml:"tenants"`
+	Routes    []RouteConfig       `yaml:"routes"`
 }
 
 type DenyCacheConfig struct {
@@ -39,9 +48,24 @@ type RouteConfig struct {
 	Name         string        `yaml:"name"`
 	PathPrefix   string        `yaml:"path_prefix"`
 	Algorithm    string        `yaml:"algorithm"`
-	Limit        int           `yaml:"limit"`
-	Window       time.Duration `yaml:"window"`
 	OnRedisError string        `yaml:"on_redis_error"`
+	Limits       []LimitConfig `yaml:"limits"`
+}
+
+type LimitConfig struct {
+	Per    string        `yaml:"per"`
+	Limit  int           `yaml:"limit"`
+	Window time.Duration `yaml:"window"`
+}
+
+func (cfg Config) TenantByKey() map[string]string {
+	tenantByKey := make(map[string]string)
+	for tenant, keys := range cfg.Tenants {
+		for _, key := range keys {
+			tenantByKey[key] = tenant
+		}
+	}
+	return tenantByKey
 }
 
 func Load(path string) (Config, error) {
@@ -90,10 +114,34 @@ func validate(cfg Config) error {
 	if cfg.DenyCache.Enabled && cfg.DenyCache.MaxKeys <= 0 {
 		return fmt.Errorf("deny_cache.max_keys must be positive when enabled")
 	}
+	err := validateTenants(cfg.Tenants)
+	if err != nil {
+		return err
+	}
 	if len(cfg.Routes) == 0 {
 		return fmt.Errorf("at least one route is required")
 	}
 	return validateRoutes(cfg.Routes, cfg.Backend)
+}
+
+func validateTenants(tenants map[string][]string) error {
+	owner := make(map[string]string)
+	for tenant, keys := range tenants {
+		if tenant == "" || tenant == UnassignedTenant {
+			return fmt.Errorf("tenant name %q is not allowed", tenant)
+		}
+		for _, key := range keys {
+			if key == "" {
+				return fmt.Errorf("tenant %q has an empty api key", tenant)
+			}
+			previous, taken := owner[key]
+			if taken {
+				return fmt.Errorf("api key %q belongs to both %q and %q", key, previous, tenant)
+			}
+			owner[key] = tenant
+		}
+	}
+	return nil
 }
 
 func validateRedis(redis RedisConfig) error {
@@ -143,14 +191,33 @@ func validateRoute(route RouteConfig, backend string) error {
 	if backend == "memory" && route.Algorithm != "fixed_window" {
 		return fmt.Errorf("memory backend only supports fixed_window")
 	}
-	if route.Limit <= 0 {
-		return fmt.Errorf("limit must be positive")
-	}
-	if route.Window < time.Millisecond {
-		return fmt.Errorf("window must be at least 1ms")
-	}
 	if route.OnRedisError != FailOpen && route.OnRedisError != FailClosed {
 		return fmt.Errorf("on_redis_error must be %s or %s", FailOpen, FailClosed)
+	}
+	return validateLimits(route.Limits)
+}
+
+func validateLimits(limits []LimitConfig) error {
+	if len(limits) == 0 {
+		return fmt.Errorf("at least one limit is required")
+	}
+
+	seenScopes := make(map[string]bool)
+	for _, limit := range limits {
+		if limit.Per != PerKey && limit.Per != PerTenant && limit.Per != PerRoute {
+			return fmt.Errorf("limit per must be %s, %s or %s, got %q", PerKey, PerTenant, PerRoute, limit.Per)
+		}
+		if seenScopes[limit.Per] {
+			return fmt.Errorf("duplicate limit per %s", limit.Per)
+		}
+		seenScopes[limit.Per] = true
+
+		if limit.Limit <= 0 {
+			return fmt.Errorf("limit must be positive")
+		}
+		if limit.Window < time.Millisecond {
+			return fmt.Errorf("window must be at least 1ms")
+		}
 	}
 	return nil
 }

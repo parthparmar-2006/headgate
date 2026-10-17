@@ -60,7 +60,7 @@ func timeAllow(t *testing.T, client redis.Scripter, budget time.Duration) (time.
 	defer cancel()
 
 	start := time.Now()
-	_, err := l.Allow(ctx, "silent", Rule{Limit: 10, Window: time.Second})
+	_, err := l.Allow(ctx, single("silent", Rule{Limit: 10, Window: time.Second}))
 	return time.Since(start), err
 }
 

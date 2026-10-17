@@ -104,6 +104,10 @@ func (o *oracle) record(r *http.Request) {
 	if err == nil {
 		o.byDecision.record(key, decisionMs/1000)
 		o.decisions.record(key, decisionMs)
+		tenant := r.Header.Get("X-Headgate-Tenant")
+		if tenant != "" {
+			o.decisions.record("tenant:"+tenant, decisionMs)
+		}
 	}
 }
 

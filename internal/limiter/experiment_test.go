@@ -107,9 +107,9 @@ type countingLimiter struct {
 	calls atomic.Int64
 }
 
-func (c *countingLimiter) Allow(ctx context.Context, key string, rule Rule) (Decision, error) {
+func (c *countingLimiter) Allow(ctx context.Context, checks []Check) (Decision, error) {
 	c.calls.Add(1)
-	return c.inner.Allow(ctx, key, rule)
+	return c.inner.Allow(ctx, checks)
 }
 
 func TestExperimentDenyCacheAccuracy(t *testing.T) {
@@ -179,7 +179,7 @@ func allowedTimestamps(t *testing.T, l Limiter, key string, rule Rule, concurren
 
 	for range concurrent {
 		wg.Go(func() {
-			decision, err := l.Allow(context.Background(), key, rule)
+			decision, err := l.Allow(context.Background(), single(key, rule))
 			if err != nil {
 				t.Errorf("unexpected error: %v", err)
 				return
@@ -276,4 +276,90 @@ func evalshaMicrosPerCall(t *testing.T, client *redis.Client) float64 {
 	}
 	t.Fatalf("cmdstat_evalsha not found")
 	return 0
+}
+
+type checkStrategy struct {
+	name   string
+	decide func(l Limiter, key Check, tenant Check) bool
+}
+
+func allowedBy(l Limiter, checks []Check) bool {
+	decision, err := l.Allow(context.Background(), checks)
+	return err == nil && decision.Allowed
+}
+
+func tenantStrategies() []checkStrategy {
+	return []checkStrategy{
+		{name: "atomic", decide: func(l Limiter, key Check, tenant Check) bool {
+			return allowedBy(l, []Check{key, tenant})
+		}},
+		{name: "tenant_then_key", decide: func(l Limiter, key Check, tenant Check) bool {
+			if !allowedBy(l, []Check{tenant}) {
+				return false
+			}
+			return allowedBy(l, []Check{key})
+		}},
+		{name: "key_then_tenant", decide: func(l Limiter, key Check, tenant Check) bool {
+			if !allowedBy(l, []Check{key}) {
+				return false
+			}
+			return allowedBy(l, []Check{tenant})
+		}},
+	}
+}
+
+func sendAtRate(l Limiter, strategy checkStrategy, key Check, tenant Check, interval time.Duration, duration time.Duration) int64 {
+	var allowed atomic.Int64
+	var wg sync.WaitGroup
+	ticker := time.NewTicker(interval)
+	defer ticker.Stop()
+
+	deadline := time.Now().Add(duration)
+	for time.Now().Before(deadline) {
+		<-ticker.C
+		wg.Go(func() {
+			if strategy.decide(l, key, tenant) {
+				allowed.Add(1)
+			}
+		})
+	}
+	wg.Wait()
+	return allowed.Load()
+}
+
+func TestExperimentTenantFairness(t *testing.T) {
+	requireExperiments(t)
+	client := newTestRedis(t)
+	warmConnections(t, client, 100)
+	l := NewRedisSlidingLog(client)
+	duration := 5 * time.Second
+
+	for _, tenantLimit := range []int{150, 120} {
+		for _, strategy := range tenantStrategies() {
+			runFairnessTrial(t, l, strategy, tenantLimit, duration)
+		}
+	}
+}
+
+func runFairnessTrial(t *testing.T, l Limiter, strategy checkStrategy, tenantLimit int, duration time.Duration) {
+	prefix := uniqueKey(t) + "-" + strategy.name + "-" + strconv.Itoa(tenantLimit)
+	tenant := Check{Key: prefix + "-tenant", Rule: Rule{Limit: tenantLimit, Window: time.Second}}
+	abusive := Check{Key: prefix + "-a", Rule: Rule{Limit: 100, Window: time.Second}}
+	polite := Check{Key: prefix + "-b", Rule: Rule{Limit: 100, Window: time.Second}}
+
+	var abusiveAllowed int64
+	var politeAllowed int64
+	var wg sync.WaitGroup
+	wg.Go(func() {
+		abusiveAllowed = sendAtRate(l, strategy, abusive, tenant, 2*time.Millisecond, duration)
+	})
+	wg.Go(func() {
+		politeAllowed = sendAtRate(l, strategy, polite, tenant, 20*time.Millisecond, duration)
+	})
+	wg.Wait()
+
+	seconds := duration.Seconds()
+	t.Logf("tenant limit %d  %-16s abusive A (500/s offered): %5.1f/s   polite B (50/s offered): %5.1f/s   tenant total: %5.1f/s",
+		tenantLimit, strategy.name, float64(abusiveAllowed)/seconds, float64(politeAllowed)/seconds,
+		float64(abusiveAllowed+politeAllowed)/seconds)
 }

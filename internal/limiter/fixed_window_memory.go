@@ -24,21 +24,36 @@ func NewMemoryFixedWindow(clock Clock) *MemoryFixedWindow {
 	}
 }
 
-func (m *MemoryFixedWindow) Allow(ctx context.Context, key string, rule Rule) (Decision, error) {
+func (m *MemoryFixedWindow) Allow(ctx context.Context, checks []Check) (Decision, error) {
+	if len(checks) == 0 {
+		return Decision{}, ErrNoChecks
+	}
 	now := m.clock.Now()
-	windowStart := now.Truncate(rule.Window)
-	windowEnd := windowStart.Add(rule.Window)
 
 	m.mu.Lock()
 	defer m.mu.Unlock()
 
-	counter := m.counterFor(key, windowStart)
-	if counter.count >= rule.Limit {
-		return Decision{Allowed: false, Remaining: 0, RetryAfter: windowEnd.Sub(now), DecidedAt: now}, nil
+	counters := make([]*windowCounter, len(checks))
+	denied := Decision{Allowed: false, DecidedAt: now, CheckIndex: -1}
+	for i, check := range checks {
+		windowStart := now.Truncate(check.Rule.Window)
+		counters[i] = m.counterFor(check.Key, windowStart)
+		if counters[i].count >= check.Rule.Limit {
+			retry := windowStart.Add(check.Rule.Window).Sub(now)
+			denied = widenDenial(denied, i, retry)
+		}
+	}
+	if denied.CheckIndex >= 0 {
+		return denied, nil
 	}
 
-	counter.count++
-	return Decision{Allowed: true, Remaining: rule.Limit - counter.count, DecidedAt: now}, nil
+	allowed := Decision{Allowed: true, DecidedAt: now, Remaining: -1}
+	for i, check := range checks {
+		counters[i].count++
+		remaining := check.Rule.Limit - counters[i].count
+		allowed = narrowRemaining(allowed, i, remaining)
+	}
+	return allowed, nil
 }
 
 func (m *MemoryFixedWindow) counterFor(key string, windowStart time.Time) *windowCounter {
@@ -48,4 +63,22 @@ func (m *MemoryFixedWindow) counterFor(key string, windowStart time.Time) *windo
 		m.counters[key] = counter
 	}
 	return counter
+}
+
+func widenDenial(denied Decision, index int, retry time.Duration) Decision {
+	if denied.CheckIndex < 0 {
+		denied.CheckIndex = index
+	}
+	if retry > denied.RetryAfter {
+		denied.RetryAfter = retry
+	}
+	return denied
+}
+
+func narrowRemaining(allowed Decision, index int, remaining int) Decision {
+	if allowed.Remaining < 0 || remaining < allowed.Remaining {
+		allowed.Remaining = remaining
+		allowed.CheckIndex = index
+	}
+	return allowed
 }

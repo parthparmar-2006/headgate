@@ -14,7 +14,7 @@ type scriptedLimiter struct {
 	calls    int
 }
 
-func (s *scriptedLimiter) Allow(ctx context.Context, key string, rule Rule) (Decision, error) {
+func (s *scriptedLimiter) Allow(ctx context.Context, checks []Check) (Decision, error) {
 	s.calls++
 	return s.decision, s.err
 }
@@ -26,9 +26,9 @@ func TestDenyCacheServesRepeatDeniesLocally(t *testing.T) {
 	inner := &scriptedLimiter{decision: Decision{Allowed: false, RetryAfter: 300 * time.Millisecond}}
 	cache := NewDenyCache(inner, clock, 100)
 
-	cache.Allow(context.Background(), "k", cacheRule)
+	cache.Allow(context.Background(), single("k", cacheRule))
 	clock.Advance(100 * time.Millisecond)
-	decision, err := cache.Allow(context.Background(), "k", cacheRule)
+	decision, err := cache.Allow(context.Background(), single("k", cacheRule))
 
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
@@ -49,9 +49,9 @@ func TestDenyCacheAsksAgainWhenRetryTimeArrives(t *testing.T) {
 	inner := &scriptedLimiter{decision: Decision{Allowed: false, RetryAfter: 300 * time.Millisecond}}
 	cache := NewDenyCache(inner, clock, 100)
 
-	cache.Allow(context.Background(), "k", cacheRule)
+	cache.Allow(context.Background(), single("k", cacheRule))
 	clock.Advance(300 * time.Millisecond)
-	cache.Allow(context.Background(), "k", cacheRule)
+	cache.Allow(context.Background(), single("k", cacheRule))
 
 	if inner.calls != 2 {
 		t.Fatalf("inner called %d times, want 2", inner.calls)
@@ -64,7 +64,7 @@ func TestDenyCacheNeverCachesAllows(t *testing.T) {
 	cache := NewDenyCache(inner, clock, 100)
 
 	for range 5 {
-		cache.Allow(context.Background(), "k", cacheRule)
+		cache.Allow(context.Background(), single("k", cacheRule))
 	}
 
 	if inner.calls != 5 {
@@ -77,8 +77,8 @@ func TestDenyCacheNeverCachesErrors(t *testing.T) {
 	inner := &scriptedLimiter{err: errors.New("redis down")}
 	cache := NewDenyCache(inner, clock, 100)
 
-	_, first := cache.Allow(context.Background(), "k", cacheRule)
-	_, second := cache.Allow(context.Background(), "k", cacheRule)
+	_, first := cache.Allow(context.Background(), single("k", cacheRule))
+	_, second := cache.Allow(context.Background(), single("k", cacheRule))
 
 	if first == nil || second == nil {
 		t.Fatalf("errors must pass through, got %v and %v", first, second)
@@ -93,8 +93,8 @@ func TestDenyCacheKeysAreIndependent(t *testing.T) {
 	inner := &scriptedLimiter{decision: Decision{Allowed: false, RetryAfter: time.Second}}
 	cache := NewDenyCache(inner, clock, 100)
 
-	cache.Allow(context.Background(), "a", cacheRule)
-	cache.Allow(context.Background(), "b", cacheRule)
+	cache.Allow(context.Background(), single("a", cacheRule))
+	cache.Allow(context.Background(), single("b", cacheRule))
 
 	if inner.calls != 2 {
 		t.Fatalf("inner called %d times, want 2", inner.calls)
@@ -107,7 +107,7 @@ func TestDenyCacheStaysWithinMaxKeys(t *testing.T) {
 	cache := NewDenyCache(inner, clock, 10)
 
 	for i := range 50 {
-		cache.Allow(context.Background(), "k"+strconv.Itoa(i), cacheRule)
+		cache.Allow(context.Background(), single("k"+strconv.Itoa(i), cacheRule))
 	}
 
 	if cache.Size() != 10 {
@@ -121,10 +121,10 @@ func TestDenyCacheSweepsExpiredEntriesWhenFull(t *testing.T) {
 	cache := NewDenyCache(inner, clock, 10)
 
 	for i := range 10 {
-		cache.Allow(context.Background(), "old"+strconv.Itoa(i), cacheRule)
+		cache.Allow(context.Background(), single("old"+strconv.Itoa(i), cacheRule))
 	}
 	clock.Advance(2 * time.Second)
-	cache.Allow(context.Background(), "new", cacheRule)
+	cache.Allow(context.Background(), single("new", cacheRule))
 
 	if cache.Size() != 1 {
 		t.Fatalf("size %d, want 1 after sweeping 10 expired entries", cache.Size())
