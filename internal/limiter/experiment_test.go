@@ -7,6 +7,7 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -97,6 +98,44 @@ func TestExperimentBurstThenTrickle(t *testing.T) {
 			worst := rolling.MaxInWindow(all, rule.Window.Milliseconds())
 			t.Logf("%-16s trial %d: burst %d (%d before edge), trickle sent %d allowed %d, worst rolling 1s = %3d (limit %d)",
 				algorithm.name, trial, len(burst), burstBeforeEdge, sent, len(trickle), worst, rule.Limit)
+		}
+	}
+}
+
+type countingLimiter struct {
+	inner Limiter
+	calls atomic.Int64
+}
+
+func (c *countingLimiter) Allow(ctx context.Context, key string, rule Rule) (Decision, error) {
+	c.calls.Add(1)
+	return c.inner.Allow(ctx, key, rule)
+}
+
+func TestExperimentDenyCacheAccuracy(t *testing.T) {
+	requireExperiments(t)
+	client := newTestRedis(t)
+	rule := Rule{Limit: 100, Window: time.Second}
+	trickleInterval := 2 * time.Millisecond
+	warmConnections(t, client, rule.Limit)
+
+	for _, algorithm := range redisAlgorithms() {
+		for _, useCache := range []bool{false, true} {
+			counter := &countingLimiter{inner: algorithm.build(client)}
+			var l Limiter = counter
+			if useCache {
+				l = NewDenyCache(counter, SystemClock{}, 1000)
+			}
+			key := uniqueKey(t) + "-" + algorithm.name + "-" + strconv.FormatBool(useCache)
+
+			sleepUntilWindowPosition(t, client, rule.Window, 950)
+			burst := allowedTimestamps(t, l, key, rule, rule.Limit)
+			trickle, sent := trickleFor(t, l, key, rule, 2*rule.Window, trickleInterval)
+
+			all := append(burst, trickle...)
+			worst := rolling.MaxInWindow(all, rule.Window.Milliseconds())
+			t.Logf("%-16s cache=%-5t sent %4d, allowed %3d, worst rolling 1s %3d, redis calls %4d",
+				algorithm.name, useCache, len(burst)+sent, len(all), worst, counter.calls.Load())
 		}
 	}
 }

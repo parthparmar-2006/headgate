@@ -43,7 +43,8 @@ func main() {
 		ReadHeaderTimeout: 5 * time.Second,
 	}
 
-	log.Printf("gateway listening on %s, upstream %s, backend %s", cfg.Listen, cfg.Upstream, cfg.Backend)
+	log.Printf("gateway listening on %s, upstream %s, backend %s, deny cache %t",
+		cfg.Listen, cfg.Upstream, cfg.Backend, cfg.DenyCache.Enabled)
 	for _, route := range cfg.Routes {
 		log.Printf("route %s %s: %s %d per %s, %s",
 			route.Name, route.PathPrefix, route.Algorithm, route.Limit, route.Window, route.OnRedisError)
@@ -70,6 +71,9 @@ func buildRoutes(cfg config.Config) ([]gateway.Route, error) {
 		l, err := buildLimiter(cfg.Backend, routeConfig.Algorithm, client)
 		if err != nil {
 			return nil, fmt.Errorf("route %s: %w", routeConfig.Name, err)
+		}
+		if cfg.DenyCache.Enabled {
+			l = limiter.NewDenyCache(l, limiter.SystemClock{}, cfg.DenyCache.MaxKeys)
 		}
 
 		route := gateway.Route{

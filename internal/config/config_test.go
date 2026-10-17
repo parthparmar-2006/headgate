@@ -93,6 +93,29 @@ func TestParseRejectsInvalidConfigs(t *testing.T) {
 	}
 }
 
+func TestParseDenyCache(t *testing.T) {
+	enabled := strings.Replace(validConfig, "routes:", "deny_cache:\n  enabled: true\n  max_keys: 5000\nroutes:", 1)
+	missingSize := strings.Replace(validConfig, "routes:", "deny_cache:\n  enabled: true\nroutes:", 1)
+
+	cfg, err := Parse([]byte(enabled))
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if !cfg.DenyCache.Enabled || cfg.DenyCache.MaxKeys != 5000 {
+		t.Fatalf("deny cache parsed wrong: %+v", cfg.DenyCache)
+	}
+
+	_, err = Parse([]byte(missingSize))
+	if err == nil || !strings.Contains(err.Error(), "deny_cache.max_keys must be positive") {
+		t.Fatalf("expected max_keys error, got %v", err)
+	}
+
+	cfg, err = Parse([]byte(validConfig))
+	if err != nil || cfg.DenyCache.Enabled {
+		t.Fatalf("deny cache should default to disabled, got %+v, %v", cfg.DenyCache, err)
+	}
+}
+
 func TestParseRejectsMemoryBackendWithSlidingAlgorithm(t *testing.T) {
 	raw := strings.Replace(validConfig, "backend: redis", "backend: memory", 1)
 

@@ -16,11 +16,17 @@ const (
 )
 
 type Config struct {
-	Listen   string        `yaml:"listen"`
-	Upstream string        `yaml:"upstream"`
-	Backend  string        `yaml:"backend"`
-	Redis    RedisConfig   `yaml:"redis"`
-	Routes   []RouteConfig `yaml:"routes"`
+	Listen    string          `yaml:"listen"`
+	Upstream  string          `yaml:"upstream"`
+	Backend   string          `yaml:"backend"`
+	Redis     RedisConfig     `yaml:"redis"`
+	DenyCache DenyCacheConfig `yaml:"deny_cache"`
+	Routes    []RouteConfig   `yaml:"routes"`
+}
+
+type DenyCacheConfig struct {
+	Enabled bool `yaml:"enabled"`
+	MaxKeys int  `yaml:"max_keys"`
 }
 
 type RedisConfig struct {
@@ -80,6 +86,9 @@ func validate(cfg Config) error {
 		if err != nil {
 			return err
 		}
+	}
+	if cfg.DenyCache.Enabled && cfg.DenyCache.MaxKeys <= 0 {
+		return fmt.Errorf("deny_cache.max_keys must be positive when enabled")
 	}
 	if len(cfg.Routes) == 0 {
 		return fmt.Errorf("at least one route is required")

@@ -7,6 +7,10 @@ redis:
   timeout: 50ms
   min_idle_conns: ${MIN_IDLE_CONNS}
 
+deny_cache:
+  enabled: ${DENY_CACHE}
+  max_keys: 100000
+
 routes:
   - name: default
     path_prefix: /
