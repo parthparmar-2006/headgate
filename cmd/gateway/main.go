@@ -12,6 +12,7 @@ import (
 	"github.com/parthparmar-2006/headgate/internal/config"
 	"github.com/parthparmar-2006/headgate/internal/gateway"
 	"github.com/parthparmar-2006/headgate/internal/limiter"
+	"github.com/parthparmar-2006/headgate/internal/metrics"
 	"github.com/redis/go-redis/v9"
 )
 
@@ -31,12 +32,13 @@ func main() {
 		log.Fatalf("upstream url: %v", err)
 	}
 
-	routes, err := buildRoutes(cfg)
+	m := metrics.New()
+	routes, err := buildRoutes(cfg, m)
 	if err != nil {
 		log.Fatalf("routes: %v", err)
 	}
 
-	handler := gateway.NewHandler(gateway.NewRouter(routes), cfg.TenantByKey(), upstream, limiterTimeout(cfg))
+	handler := gateway.NewHandler(gateway.NewRouter(routes), cfg.TenantByKey(), upstream, limiterTimeout(cfg), m)
 	server := &http.Server{
 		Addr:              cfg.Listen,
 		Handler:           handler,
@@ -44,7 +46,28 @@ func main() {
 	}
 
 	logStartup(cfg)
+	startMetricsServer(cfg.MetricsListen, m)
 	log.Fatal(server.ListenAndServe())
+}
+
+func startMetricsServer(addr string, m *metrics.Metrics) {
+	if addr == "" {
+		return
+	}
+
+	mux := http.NewServeMux()
+	mux.Handle("GET /metrics", m.Handler())
+	server := &http.Server{
+		Addr:              addr,
+		Handler:           mux,
+		ReadHeaderTimeout: 5 * time.Second,
+	}
+
+	go func() {
+		log.Printf("metrics listening on %s", addr)
+		err := server.ListenAndServe()
+		log.Printf("metrics server stopped: %v", err)
+	}()
 }
 
 func logStartup(cfg config.Config) {
@@ -65,11 +88,12 @@ func limiterTimeout(cfg config.Config) time.Duration {
 	return cfg.Redis.Timeout
 }
 
-func buildRoutes(cfg config.Config) ([]gateway.Route, error) {
+func buildRoutes(cfg config.Config, m *metrics.Metrics) ([]gateway.Route, error) {
 	var client *redis.Client
 	if cfg.Backend == "redis" {
 		client = limiter.NewRedisClient(cfg.Redis.Addr, cfg.Redis.MinIdleConns)
 		warnIfRedisUnreachable(client, cfg.Redis.Addr)
+		registerRedisPoolMetrics(m, client)
 	}
 
 	routes := []gateway.Route{}
@@ -79,7 +103,9 @@ func buildRoutes(cfg config.Config) ([]gateway.Route, error) {
 			return nil, fmt.Errorf("route %s: %w", routeConfig.Name, err)
 		}
 		if cfg.DenyCache.Enabled {
-			l = limiter.NewDenyCache(l, limiter.SystemClock{}, cfg.DenyCache.MaxKeys)
+			cache := limiter.NewDenyCache(l, limiter.SystemClock{}, cfg.DenyCache.MaxKeys)
+			registerDenyCacheMetrics(m, routeConfig.Name, cache)
+			l = cache
 		}
 
 		route := gateway.Route{

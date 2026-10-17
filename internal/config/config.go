@@ -24,13 +24,14 @@ const (
 const UnassignedTenant = "_unassigned"
 
 type Config struct {
-	Listen    string              `yaml:"listen"`
-	Upstream  string              `yaml:"upstream"`
-	Backend   string              `yaml:"backend"`
-	Redis     RedisConfig         `yaml:"redis"`
-	DenyCache DenyCacheConfig     `yaml:"deny_cache"`
-	Tenants   map[string][]string `yaml:"tenants"`
-	Routes    []RouteConfig       `yaml:"routes"`
+	Listen        string              `yaml:"listen"`
+	MetricsListen string              `yaml:"metrics_listen"`
+	Upstream      string              `yaml:"upstream"`
+	Backend       string              `yaml:"backend"`
+	Redis         RedisConfig         `yaml:"redis"`
+	DenyCache     DenyCacheConfig     `yaml:"deny_cache"`
+	Tenants       map[string][]string `yaml:"tenants"`
+	Routes        []RouteConfig       `yaml:"routes"`
 }
 
 type DenyCacheConfig struct {

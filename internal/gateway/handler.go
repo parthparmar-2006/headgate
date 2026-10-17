@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"github.com/parthparmar-2006/headgate/internal/limiter"
+	"github.com/parthparmar-2006/headgate/internal/metrics"
 )
 
 const APIKeyHeader = "X-API-Key"
@@ -27,17 +28,19 @@ type Handler struct {
 	tenantByKey    map[string]string
 	proxy          *httputil.ReverseProxy
 	limiterTimeout time.Duration
+	metrics        *metrics.Metrics
 }
 
-func NewHandler(router *Router, tenantByKey map[string]string, upstream *url.URL, limiterTimeout time.Duration) *Handler {
+func NewHandler(router *Router, tenantByKey map[string]string, upstream *url.URL, limiterTimeout time.Duration, m *metrics.Metrics) *Handler {
 	proxy := httputil.NewSingleHostReverseProxy(upstream)
-	proxy.Transport = newUpstreamTransport()
+	proxy.Transport = timingTransport{inner: newUpstreamTransport()}
 
 	return &Handler{
 		router:         router,
 		tenantByKey:    tenantByKey,
 		proxy:          proxy,
 		limiterTimeout: limiterTimeout,
+		metrics:        m,
 	}
 }
 
@@ -50,14 +53,17 @@ func newUpstreamTransport() *http.Transport {
 }
 
 func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
+	start := time.Now()
 	route, found := h.router.Match(r.URL.Path)
 	if !found {
+		h.metrics.CountRequest("", metrics.OutcomeNoRoute)
 		http.NotFound(w, r)
 		return
 	}
 
 	apiKey := r.Header.Get(APIKeyHeader)
 	if apiKey == "" {
+		h.metrics.CountRequest(route.Name, metrics.OutcomeNoKey)
 		http.Error(w, "missing API key", http.StatusUnauthorized)
 		return
 	}
@@ -67,18 +73,37 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 
 	decision, err := h.decide(r.Context(), route, apiKey, tenant)
 	if err != nil {
-		h.handleLimiterError(w, r, route)
+		h.handleLimiterError(w, r, route, start)
 		return
 	}
 
 	writeRateLimitHeaders(w, route, decision)
 	if !decision.Allowed {
+		h.metrics.CountRequest(route.Name, metrics.OutcomeDenied)
+		h.metrics.CountDenied(route.Name, scopeOf(route, decision))
 		writeTooManyRequests(w, decision)
 		return
 	}
 
 	r.Header.Set(DecisionTimeHeader, strconv.FormatInt(decision.DecidedAt.UnixMilli(), 10))
-	h.proxy.ServeHTTP(w, r)
+	h.metrics.CountRequest(route.Name, metrics.OutcomeAllowed)
+	h.forward(w, r, route, start, metrics.OutcomeAllowed)
+}
+
+func (h *Handler) forward(w http.ResponseWriter, r *http.Request, route Route, start time.Time, outcome string) {
+	timing := &requestTiming{}
+	h.proxy.ServeHTTP(w, r.WithContext(withTiming(r.Context(), timing)))
+
+	total := time.Since(start)
+	h.metrics.ObserveUpstream(route.Name, timing.upstream)
+	h.metrics.ObserveOverhead(route.Name, outcome, total-timing.upstream)
+}
+
+func scopeOf(route Route, decision limiter.Decision) string {
+	if decision.CheckIndex < 0 || decision.CheckIndex >= len(route.Limits) {
+		return "unknown"
+	}
+	return route.Limits[decision.CheckIndex].Scope
 }
 
 func (h *Handler) tenantOf(apiKey string) string {
@@ -93,7 +118,10 @@ func (h *Handler) decide(ctx context.Context, route Route, apiKey string, tenant
 	ctx, cancel := context.WithTimeout(ctx, h.limiterTimeout)
 	defer cancel()
 
-	return route.Limiter.Allow(ctx, checksFor(route, apiKey, tenant))
+	start := time.Now()
+	decision, err := route.Limiter.Allow(ctx, checksFor(route, apiKey, tenant))
+	h.metrics.ObserveLimiter(route.Name, time.Since(start))
+	return decision, err
 }
 
 func checksFor(route Route, apiKey string, tenant string) []limiter.Check {
@@ -117,13 +145,15 @@ func limiterKey(routeName string, scope string, apiKey string, tenant string) st
 	return routeName + ":route"
 }
 
-func (h *Handler) handleLimiterError(w http.ResponseWriter, r *http.Request, route Route) {
+func (h *Handler) handleLimiterError(w http.ResponseWriter, r *http.Request, route Route, start time.Time) {
 	if route.FailOpen {
 		w.Header().Set(LimiterStatusHeader, "fail-open")
-		h.proxy.ServeHTTP(w, r)
+		h.metrics.CountRequest(route.Name, metrics.OutcomeFailOpen)
+		h.forward(w, r, route, start, metrics.OutcomeFailOpen)
 		return
 	}
 
+	h.metrics.CountRequest(route.Name, metrics.OutcomeFailClosed)
 	w.Header().Set(LimiterStatusHeader, "fail-closed")
 	w.Header().Set("Retry-After", "1")
 	http.Error(w, "rate limiter unavailable", http.StatusServiceUnavailable)

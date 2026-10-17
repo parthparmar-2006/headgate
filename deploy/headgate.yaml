@@ -1,4 +1,5 @@
 listen: ":8080"
+metrics_listen: ":9100"
 upstream: "http://upstream:9000"
 backend: ${BACKEND}
 
@@ -33,7 +34,7 @@ routes:
 
   - name: open
     path_prefix: /open
-    algorithm: sliding_log
+    algorithm: ${ALGORITHM}
     on_redis_error: fail_open
     limits:
       - per: key
@@ -42,9 +43,18 @@ routes:
 
   - name: closed
     path_prefix: /closed
-    algorithm: sliding_log
+    algorithm: ${ALGORITHM}
     on_redis_error: fail_closed
     limits:
       - per: key
         limit: 100
+        window: 1s
+
+  - name: bench
+    path_prefix: /bench
+    algorithm: ${ALGORITHM}
+    on_redis_error: fail_closed
+    limits:
+      - per: key
+        limit: 100000
         window: 1s

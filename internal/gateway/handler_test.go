@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"github.com/parthparmar-2006/headgate/internal/limiter"
+	"github.com/parthparmar-2006/headgate/internal/metrics"
 )
 
 type fakeLimiter struct {
@@ -73,7 +74,7 @@ func newTestHandler(t *testing.T, upstream *recordingUpstream, routes []Route) *
 		t.Fatalf("parse upstream url: %v", err)
 	}
 	tenants := map[string]string{"acme-key": "acme"}
-	return NewHandler(NewRouter(routes), tenants, target, 50*time.Millisecond)
+	return NewHandler(NewRouter(routes), tenants, target, 50*time.Millisecond, metrics.New())
 }
 
 func singleRoute(l limiter.Limiter, failOpen bool) []Route {

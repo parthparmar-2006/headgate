@@ -4,6 +4,7 @@ import (
 	"context"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 )
 
@@ -16,6 +17,7 @@ type DenyCache struct {
 	mu          sync.Mutex
 	deniedUntil map[string]cachedDenial
 	lastSweep   time.Time
+	hits        atomic.Int64
 }
 
 type cachedDenial struct {
@@ -37,6 +39,7 @@ func (c *DenyCache) Allow(ctx context.Context, checks []Check) (Decision, error)
 	now := c.clock.Now()
 	denial, cached := c.lookup(cacheKey, now)
 	if cached {
+		c.hits.Add(1)
 		decision := Decision{
 			Allowed:    false,
 			RetryAfter: denial.until.Sub(now),
@@ -58,6 +61,10 @@ func (c *DenyCache) Allow(ctx context.Context, checks []Check) (Decision, error)
 		c.remember(cacheKey, denial)
 	}
 	return decision, nil
+}
+
+func (c *DenyCache) Hits() int64 {
+	return c.hits.Load()
 }
 
 func (c *DenyCache) Size() int {
